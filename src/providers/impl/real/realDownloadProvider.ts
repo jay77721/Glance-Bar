@@ -1,43 +1,65 @@
 import type { HubEvent } from "@/entities";
 
 import { sendDownloadControl, type DownloadAction } from "../../../runtime/actions/downloadControlRuntime";
+import {
+  getDownloadMonitorSupport,
+  loadDownloadState,
+  onDownloadChanged,
+  type DownloadChangedPayload,
+} from "../../../runtime/system/systemMonitorRuntime";
 import { createProviderShell } from "../../core/providerShell";
 import type { HubProvider, HubProviderCapability, HubProviderMetadata } from "../../core/types";
 
 
 const PROVIDER_ID = "real-download-provider";
-const TICK_INTERVAL_MS = 1_000;
-const PROGRESS_INCREMENT = 5;
 
 export type DownloadProviderStatus = "downloading" | "paused" | "cancelled" | "completed";
 
-function downloadEvent(progress: number, status: DownloadProviderStatus): HubEvent {
-  const createdAt = Date.now();
+/**
+ * Map a native {@link DownloadChangedPayload} to a download {@link HubEvent}.
+ * Privacy-safe: the payload carries no file paths or names, only coarse status,
+ * a rough progress percentage, and the active download count.
+ */
+function downloadPayloadToEvent(payload: DownloadChangedPayload): HubEvent {
+  const createdAt = payload.checkedAt || Date.now();
+
+  let title = "Downloads";
+  let subtitle = "No active downloads";
+  if (payload.status === "downloading") {
+    title =
+      payload.activeDownloads > 1
+        ? `${payload.activeDownloads} downloads`
+        : "Downloading";
+    subtitle = "In progress";
+  } else if (payload.status === "completed") {
+    title = "Download complete";
+    subtitle = "Saved to Downloads";
+  }
+
   return {
     id: `${PROVIDER_ID}-download-${createdAt}`,
     type: "download",
     source: "download",
     createdAt,
-    progress,
+    progress: payload.progress,
     payload: {
       id: "real-download-task",
       type: "download",
-      title: "Active download",
-      subtitle: "from real provider",
-      progress,
+      title,
+      subtitle,
+      progress: payload.progress,
       accent: "green",
     },
     metadata: {
-      status,
-      code: "available",
+      status: payload.status,
+      code: payload.code,
+      activeDownloads: payload.activeDownloads,
     },
   };
 }
 
 export function createRealDownloadProvider(): HubProvider {
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
-  let progress = 0;
-  let status: DownloadProviderStatus = "downloading";
+  let unlisten: (() => void) | undefined;
 
   const metadata: HubProviderMetadata = {
     id: PROVIDER_ID,
@@ -47,35 +69,53 @@ export function createRealDownloadProvider(): HubProvider {
     mock: false,
   };
 
-  const capabilities: HubProviderCapability[] = [
-    { id: "download", kind: "download", origin: "real", support: "available" },
-  ];
+  // Real monitoring is Windows-only (MVP) and requires the Tauri runtime, so the
+  // capability `support` fact reflects whether monitoring actually works here.
+  const support = getDownloadMonitorSupport();
 
-  function tick() {
-    if (status === "downloading") {
-      progress = Math.min(100, progress + PROGRESS_INCREMENT);
-      if (progress >= 100) {
-        status = "completed";
-      }
-    }
-  }
+  const capabilities: HubProviderCapability[] = [
+    { id: "download", kind: "download", origin: "real", support },
+  ];
 
   return createProviderShell({
     metadata,
     capabilities,
 
     start(handle) {
-      pollTimer = setInterval(() => {
-        tick();
-        handle.emit([downloadEvent(progress, status)]);
-      }, TICK_INTERVAL_MS);
+      // If monitoring is unsupported on this platform there is nothing to watch;
+      // leave the capability as "unsupported" and do not register a listener.
+      if (support !== "available") {
+        return;
+      }
+
+      // Seed the bar with the current state so we don't wait for the next change
+      // event before reflecting an already-active download.
+      loadDownloadState()
+        .then((result) => {
+          if (!result || result.status === "idle") {
+            return;
+          }
+          handle.emit([downloadPayloadToEvent(result)]);
+        })
+        .catch(() => {
+          // Initial fetch failed — non-critical, the listener below catches
+          // future changes.
+        });
+
+      onDownloadChanged((payload) => {
+        handle.emit([downloadPayloadToEvent(payload)]);
+      })
+        .then((unlistenFn) => {
+          unlisten = unlistenFn;
+        })
+        .catch(() => {
+          handle.markDegraded();
+        });
     },
 
     stop() {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = undefined;
-      }
+      unlisten?.();
+      unlisten = undefined;
     },
   });
 }
@@ -135,5 +175,30 @@ export async function dispatchDownloadControl(
   return state.status;
 }
 
-export const REAL_DOWNLOAD_TICK_INTERVAL_MS = TICK_INTERVAL_MS;
-export const REAL_DOWNLOAD_PROGRESS_INCREMENT = PROGRESS_INCREMENT;
+/**
+ * Build a download {@link HubEvent} from local progress + status. Kept on its
+ * own (rather than reusing {@link downloadPayloadToEvent}) so control-driven
+ * emissions retain the provider's locally tracked progress value.
+ */
+function downloadEvent(progress: number, status: DownloadProviderStatus): HubEvent {
+  const createdAt = Date.now();
+  return {
+    id: `${PROVIDER_ID}-download-${createdAt}`,
+    type: "download",
+    source: "download",
+    createdAt,
+    progress,
+    payload: {
+      id: "real-download-task",
+      type: "download",
+      title: "Active download",
+      subtitle: "from real provider",
+      progress,
+      accent: "green",
+    },
+    metadata: {
+      status,
+      code: "available",
+    },
+  };
+}

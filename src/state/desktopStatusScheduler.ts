@@ -112,14 +112,23 @@ export function scheduleDesktopStatus(
                 changed: true,
               };
             }
-            // Defer to the alternation function below. Return the same
-            // kind we showed last so the alternation function can
-            // compute a flip without us pre-empting it.
-            return {
-              kind: previousKind,
-              reason: "priority" as const,
-              changed: false,
-            };
+            // Only the media/resident pair participates in the alternation
+            // cycle below. The alternation function only flips between those
+            // two kinds, so deferring to it is only correct when the previous
+            // kind is one of them. For any other previous kind (e.g. a
+            // download that just finished and left the active set), fall
+            // through to the normal priority/stability logic below rather
+            // than holding a stale, no-longer-active kind.
+            if (previousKind === "media" || previousKind === "resident") {
+              // Defer to the alternation function below. Return the same
+              // kind we showed last so the alternation function can
+              // compute a flip without us pre-empting it.
+              return {
+                kind: previousKind,
+                reason: "priority" as const,
+                changed: false,
+              };
+            }
           }
 
           const previousStillStable =

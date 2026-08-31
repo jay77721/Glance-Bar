@@ -58,7 +58,7 @@ describe("createRealNpmProvider", () => {
         id: "npm",
         kind: "npm",
         origin: "real",
-        support: "available",
+        support: "unsupported",
       });
     });
   });

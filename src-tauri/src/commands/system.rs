@@ -4,8 +4,11 @@
 
 use crate::clamp_percent;
 use crate::types::{
-    DownloadControlResult, OverlayPolicy, SharedDesktopProductState, SystemPerformanceSnapshot,
+    DownloadControlResult, DownloadFolderStatus, OverlayPolicy, SharedDesktopProductState,
+    SystemPerformanceSnapshot,
 };
+use std::collections::HashMap;
+use std::path::PathBuf;
 use sysinfo::{Networks, System};
 use tauri::State;
 
@@ -48,19 +51,37 @@ pub fn get_overlay_policy(
     state: State<'_, SharedDesktopProductState<tauri::Wry>>,
 ) -> OverlayPolicy {
     let foreground_fullscreen = crate::commands::window::foreground_window_is_fullscreen();
-    let avoid_fullscreen = state
+    let (always_float, avoid_fullscreen) = state
         .lock()
-        .map(|state| state.preferences.avoid_fullscreen)
-        .unwrap_or(true);
-    let should_float = if avoid_fullscreen {
-        !foreground_fullscreen
-    } else {
-        true
-    };
+        .map(|state| (state.preferences.always_float, state.preferences.avoid_fullscreen))
+        .unwrap_or((true, true));
+    let should_float =
+        compute_overlay_policy(always_float, avoid_fullscreen, foreground_fullscreen);
 
     OverlayPolicy {
         foreground_fullscreen,
         should_float,
+    }
+}
+
+/// Pure policy core so the always-float / avoid-fullscreen / fullscreen truth
+/// table is unit-testable without a live Tauri state or a foreground window.
+///
+/// `should_float` (drive the window topmost) is only true when the user wants
+/// the bar to float at all (`always_float`). On top of that, fullscreen
+/// avoidance suppresses floating while a foreground window covers a monitor.
+pub(crate) fn compute_overlay_policy(
+    always_float: bool,
+    avoid_fullscreen: bool,
+    foreground_fullscreen: bool,
+) -> bool {
+    if !always_float {
+        return false;
+    }
+    if avoid_fullscreen {
+        !foreground_fullscreen
+    } else {
+        true
     }
 }
 
@@ -159,4 +180,88 @@ pub fn install_update() -> Result<DownloadControlResult, String> {
 #[tauri::command]
 pub fn dismiss_notification() -> Result<DownloadControlResult, String> {
     Ok(DownloadControlResult { success: true })
+}
+
+// ---------------------------------------------------------------------------
+// Download folder state — real monitoring for Windows, unsupported elsewhere.
+// ---------------------------------------------------------------------------
+// Stateless, on-demand snapshot of the user's Downloads folder. The event
+// stream (`status-center://download-changed`, emitted by the download monitor)
+// carries live changes; this command gives the provider an immediate snapshot on
+// start so the bar does not wait for the next change event. Mirrors the media
+// session's `get_media_session_status` command.
+#[tauri::command]
+pub fn get_download_state() -> DownloadFolderStatus {
+    #[cfg(windows)]
+    {
+        let now = crate::unix_time_ms();
+        let Some(dir) = crate::monitoring::downloads_dir() else {
+            return DownloadFolderStatus {
+                status: "idle",
+                active_downloads: 0,
+                progress: 0,
+                code: "unsupported",
+                checked_at: now,
+            };
+        };
+
+        let (_, largest_temp, count) = crate::monitoring::scan_downloads(&dir);
+        let mut expected_total = 0;
+        let progress = crate::monitoring::compute_progress(largest_temp, &mut expected_total);
+        let status = if count > 0 { "downloading" } else { "idle" };
+
+        DownloadFolderStatus {
+            status,
+            active_downloads: count,
+            progress,
+            code: "available",
+            checked_at: now,
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        DownloadFolderStatus {
+            status: "idle",
+            active_downloads: 0,
+            progress: 0,
+            code: "unsupported",
+            checked_at: crate::unix_time_ms(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — pure-function overlay policy core only.
+// ---------------------------------------------------------------------------
+// `compute_overlay_policy` has no side effects and no Tauri state, so the full
+// always-float / avoid-fullscreen / fullscreen truth table is coverable in
+// unit tests.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn floats_when_always_float_set_and_no_fullscreen() {
+        assert!(compute_overlay_policy(true, true, false));
+    }
+
+    #[test]
+    fn suppresses_float_when_avoiding_fullscreen_and_fullscreen_active() {
+        assert!(!compute_overlay_policy(true, true, true));
+    }
+
+    #[test]
+    fn floats_through_fullscreen_when_not_avoiding_it() {
+        assert!(compute_overlay_policy(true, false, true));
+    }
+
+    #[test]
+    fn never_floats_when_always_float_disabled_regardless_of_other_settings() {
+        assert!(!compute_overlay_policy(false, true, false));
+        assert!(!compute_overlay_policy(false, true, true));
+        assert!(!compute_overlay_policy(false, false, false));
+        assert!(!compute_overlay_policy(false, false, true));
+    }
 }

@@ -72,7 +72,7 @@ export function createRealGitProvider(): HubProvider {
   };
 
   const capabilities: HubProviderCapability[] = [
-    { id: "git", kind: "git", origin: "real", support: "available" },
+    { id: "git", kind: "git", origin: "real", support: "unsupported" },
   ];
 
   return createProviderShell({

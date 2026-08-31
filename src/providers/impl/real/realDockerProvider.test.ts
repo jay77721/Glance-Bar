@@ -59,7 +59,7 @@ describe("createRealDockerProvider", () => {
         id: "docker",
         kind: "docker",
         origin: "real",
-        support: "available",
+        support: "unsupported",
       });
     });
   });

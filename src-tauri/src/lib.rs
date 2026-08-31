@@ -333,6 +333,7 @@ pub fn run() {
             monitoring::start_clipboard_monitor(app.handle().clone(), Arc::clone(&app_shutdown));
             monitoring::start_focus_monitor(app.handle().clone(), Arc::clone(&app_shutdown));
             monitoring::start_media_monitor(app.handle(), Arc::clone(&app_shutdown));
+            monitoring::start_download_monitor(app.handle().clone(), Arc::clone(&app_shutdown));
 
             Ok(())
         })
@@ -367,6 +368,7 @@ pub fn run() {
             commands::system::cancel_download,
             commands::system::install_update,
             commands::system::dismiss_notification,
+            commands::system::get_download_state,
             commands::system::get_autostart_enabled,
             commands::system::set_autostart_enabled
         ])

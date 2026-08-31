@@ -55,7 +55,7 @@ describe("createRealGitProvider", () => {
         id: "git",
         kind: "git",
         origin: "real",
-        support: "available",
+        support: "unsupported",
       });
     });
   });

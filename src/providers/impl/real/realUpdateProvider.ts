@@ -48,7 +48,7 @@ export function createRealUpdateProvider(): HubProvider {
   };
 
   const capabilities: HubProviderCapability[] = [
-    { id: "update", kind: "update", origin: "real", support: "available" },
+    { id: "update", kind: "update", origin: "real", support: "unsupported" },
   ];
 
   function tick() {

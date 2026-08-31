@@ -101,7 +101,7 @@ export function createRealNpmProvider(): HubProvider {
   };
 
   const capabilities: HubProviderCapability[] = [
-    { id: "npm", kind: "npm", origin: "real", support: "available" },
+    { id: "npm", kind: "npm", origin: "real", support: "unsupported" },
   ];
 
   return createProviderShell({

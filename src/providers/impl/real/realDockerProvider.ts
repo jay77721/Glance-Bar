@@ -99,7 +99,7 @@ export function createRealDockerProvider(): HubProvider {
   };
 
   const capabilities: HubProviderCapability[] = [
-    { id: "docker", kind: "docker", origin: "real", support: "available" },
+    { id: "docker", kind: "docker", origin: "real", support: "unsupported" },
   ];
 
   return createProviderShell({

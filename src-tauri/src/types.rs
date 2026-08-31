@@ -219,3 +219,13 @@ pub struct NotificationSummaryPayload {
 pub struct DownloadControlResult {
     pub success: bool,
 }
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadFolderStatus {
+    pub status: &'static str,
+    pub active_downloads: u32,
+    pub progress: u8,
+    pub code: &'static str,
+    pub checked_at: u64,
+}

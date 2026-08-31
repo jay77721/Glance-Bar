@@ -51,7 +51,7 @@ describe("createRealUpdateProvider", () => {
         id: "update",
         kind: "update",
         origin: "real",
-        support: "available",
+        support: "unsupported",
       });
     });
   });

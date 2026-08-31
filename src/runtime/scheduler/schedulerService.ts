@@ -164,17 +164,25 @@ export function createSchedulerService() {
         hasEverShownMedia = true;
         return { kind: "media", changed: "media" !== state.currentKind };
       }
-      const alternated = shouldAlternateMediaWithResident(
-        state.currentKind,
-        now,
-        state.changedAt,
-        effectiveActiveKinds,
-        availableKinds,
-      );
-      return {
-        kind: alternated,
-        changed: alternated !== state.currentKind,
-      };
+      // Only the media/resident pair participates in the alternation cycle.
+      // shouldAlternateMediaWithResident only flips between those two kinds,
+      // so deferring to it is only correct when the current kind is one of
+      // them. For any other current kind (e.g. a download that just finished
+      // and left the active set), fall through to the normal priority/stability
+      // logic below rather than holding a stale, no-longer-active kind.
+      if (state.currentKind === "media" || state.currentKind === "resident") {
+        const alternated = shouldAlternateMediaWithResident(
+          state.currentKind,
+          now,
+          state.changedAt,
+          effectiveActiveKinds,
+          availableKinds,
+        );
+        return {
+          kind: alternated,
+          changed: alternated !== state.currentKind,
+        };
+      }
     }
 
     const previousStillStable =

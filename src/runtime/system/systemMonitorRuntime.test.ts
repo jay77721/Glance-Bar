@@ -13,16 +13,22 @@ vi.mock("@tauri-apps/api/event", () => ({
 // Imports must come AFTER vi.mock so they pick up the mocked module.
 import {
   CLIPBOARD_CHANGED_EVENT,
+  DOWNLOAD_CHANGED_EVENT,
   FOCUS_ASSIST_CHANGED_EVENT,
   MEDIA_SESSION_CHANGED_EVENT,
   NOTIFICATIONS_CHANGED_EVENT,
   getFocusAssistState,
   getNotificationSummary,
+  getDownloadMonitorSupport,
+  loadDownloadState,
   onClipboardChanged,
+  onDownloadChanged,
   onFocusAssistChanged,
   onMediaSessionChanged,
   onNotificationsChanged,
+  parseDownloadChangedPayload,
   type ClipboardChangedPayload,
+  type DownloadChangedPayload,
   type FocusAssistState,
   type MediaSessionChangedPayload,
   type NotificationSummary,
@@ -366,6 +372,279 @@ describe("systemMonitorRuntime.test", () => {
       assert.equal(typeof unlistenFn, "function");
       unlistenFn();
       assert.equal(unlisten.mock.calls.length, 1);
+    });
+  });
+
+  // ── onDownloadChanged (sister listener, same contract) ────────
+
+  describe("onDownloadChanged", () => {
+    it("returns a Promise<UnlistenFn>", async () => {
+      const { unlisten } = captureListen();
+      const unlistenFn = await onDownloadChanged(() => {});
+      assert.equal(unlistenFn, unlisten);
+    });
+
+    it("subscribes to the download-changed event name", async () => {
+      captureListen();
+      await onDownloadChanged(() => {});
+      assert.equal(listenMock.mock.calls[0]?.[0], DOWNLOAD_CHANGED_EVENT);
+    });
+
+    it("forwards a downloading payload to the handler", async () => {
+      const { fire } = captureListen();
+      const received: DownloadChangedPayload[] = [];
+      await onDownloadChanged((status) => received.push(status));
+
+      const payload: DownloadChangedPayload = {
+        status: "downloading",
+        activeDownloads: 2,
+        progress: 33,
+        code: "available",
+        checkedAt: 1_780_743_600_000,
+      };
+      fire(payload);
+
+      assert.equal(received.length, 1);
+      assert.deepEqual(received[0], payload);
+    });
+
+    it("forwards a completed payload without mutating it", async () => {
+      const { fire } = captureListen();
+      const received: DownloadChangedPayload[] = [];
+      await onDownloadChanged((status) => received.push(status));
+
+      fire({
+        status: "completed",
+        activeDownloads: 0,
+        progress: 100,
+        code: "available",
+        checkedAt: 12345,
+      });
+
+      const first = received[0];
+      if (!first) {
+        throw new Error("expected payload to be forwarded");
+      }
+      assert.equal(first.status, "completed");
+      assert.equal(first.progress, 100);
+      assert.equal(first.checkedAt, 12345);
+    });
+
+    it("returns the unlisten function for cleanup", async () => {
+      const { unlisten } = captureListen();
+      const unlistenFn = await onDownloadChanged(() => {});
+      assert.equal(typeof unlistenFn, "function");
+      unlistenFn();
+      assert.equal(unlisten.mock.calls.length, 1);
+    });
+
+    it("propagates rejection when Tauri listen fails", async () => {
+      listenMock.mockRejectedValue(new Error("not in tauri environment"));
+
+      let rejected = false;
+      try {
+        await onDownloadChanged(() => {});
+      } catch {
+        rejected = true;
+      }
+      assert.equal(rejected, true);
+    });
+  });
+
+  // ── parseDownloadChangedPayload ───────────────────────────────
+
+  describe("parseDownloadChangedPayload", () => {
+    it("maps a well-formed downloading payload", () => {
+      const result = parseDownloadChangedPayload({
+        status: "downloading",
+        activeDownloads: 1,
+        progress: 42,
+        code: "available",
+        checkedAt: 1_780_743_600_000,
+      });
+      assert.deepEqual(result, {
+        status: "downloading",
+        activeDownloads: 1,
+        progress: 42,
+        code: "available",
+        checkedAt: 1_780_743_600_000,
+      });
+    });
+
+    it("maps a completed payload", () => {
+      const result = parseDownloadChangedPayload({
+        status: "completed",
+        activeDownloads: 0,
+        progress: 100,
+        code: "available",
+        checkedAt: 1,
+      });
+      assert.equal(result?.status, "completed");
+      assert.equal(result?.progress, 100);
+    });
+
+    it("clamps an out-of-range progress into [0, 100]", () => {
+      const tooHigh = parseDownloadChangedPayload({
+        status: "downloading",
+        activeDownloads: 1,
+        progress: 250,
+        code: "available",
+        checkedAt: 1,
+      });
+      assert.equal(tooHigh?.progress, 100);
+
+      const tooLow = parseDownloadChangedPayload({
+        status: "downloading",
+        activeDownloads: 1,
+        progress: -10,
+        code: "available",
+        checkedAt: 1,
+      });
+      assert.equal(tooLow?.progress, 0);
+    });
+
+    it("returns undefined for a primitive payload", () => {
+      assert.equal(parseDownloadChangedPayload("nope"), undefined);
+    });
+
+    it("returns undefined for a null payload", () => {
+      assert.equal(parseDownloadChangedPayload(null), undefined);
+    });
+
+    it("returns undefined when a required field is missing", () => {
+      const result = parseDownloadChangedPayload({
+        status: "downloading",
+        activeDownloads: 1,
+        progress: 42,
+        // code + checkedAt missing
+      });
+      assert.equal(result, undefined);
+    });
+
+    it("returns undefined for an invalid status", () => {
+      const result = parseDownloadChangedPayload({
+        status: "stalled",
+        activeDownloads: 1,
+        progress: 42,
+        code: "available",
+        checkedAt: 1,
+      });
+      assert.equal(result, undefined);
+    });
+  });
+
+  // ── loadDownloadState (polling fetcher) ───────────────────────
+
+  describe("loadDownloadState", () => {
+    function makeInvoke(
+      result: unknown,
+      calls: string[],
+    ): TauriInvoke {
+      return async (command) => {
+        calls.push(command);
+        return result;
+      };
+    }
+
+    it("returns undefined when no Tauri invoke is available", async () => {
+      const result = await loadDownloadState(undefined);
+      assert.equal(result, undefined);
+    });
+
+    it("invokes get_download_state and maps a well-formed payload", async () => {
+      const calls: string[] = [];
+      const invoke = makeInvoke(
+        {
+          status: "downloading",
+          activeDownloads: 1,
+          progress: 42,
+          code: "available",
+          checkedAt: 1_780_743_600_000,
+        },
+        calls,
+      );
+
+      const result = await loadDownloadState(invoke);
+
+      assert.deepEqual(calls, ["get_download_state"]);
+      assert.deepEqual(result, {
+        status: "downloading",
+        activeDownloads: 1,
+        progress: 42,
+        code: "available",
+        checkedAt: 1_780_743_600_000,
+      });
+    });
+
+    it("returns undefined when the native boundary rejects", async () => {
+      const invoke: TauriInvoke = async () => {
+        throw new Error("download state failed");
+      };
+      const result = await loadDownloadState(invoke);
+      assert.equal(result, undefined);
+    });
+
+    it("returns undefined when the payload is malformed", async () => {
+      const invoke = makeInvoke({ status: "downloading" }, []);
+      const result = await loadDownloadState(invoke);
+      assert.equal(result, undefined);
+    });
+  });
+
+  // ── getDownloadMonitorSupport ─────────────────────────────────
+
+  describe("getDownloadMonitorSupport", () => {
+    // `navigator.platform` is what the support helper reads, so each test sets
+    // it explicitly. We redefine it per-test (configurable) and restore the
+    // original descriptor in beforeEach to keep tests isolated.
+    function setNavigatorPlatform(platform: string): void {
+      Object.defineProperty(globalThis, "navigator", {
+        value: { platform },
+        configurable: true,
+        writable: true,
+      });
+    }
+
+    beforeEach(() => {
+      const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+      if (original) {
+        // Restore once at the start of each test; runs before the test body's
+        // own redefinition so prior-test mutations never leak.
+        Object.defineProperty(globalThis, "navigator", original);
+      }
+      delete (globalThis as Record<string, unknown>).__TAURI__;
+    });
+
+    function setTauriInvoke(): void {
+      (globalThis as Record<string, unknown>).__TAURI__ = {
+        core: { invoke: async () => undefined },
+      };
+    }
+
+    it("returns unsupported when no Tauri invoke is available", () => {
+      setNavigatorPlatform("Win32");
+      assert.equal(getDownloadMonitorSupport(), "unsupported");
+    });
+
+    it("returns available on Windows in a Tauri runtime", () => {
+      setTauriInvoke();
+      setNavigatorPlatform("Win32");
+      assert.equal(getDownloadMonitorSupport(), "available");
+    });
+
+    it("returns unsupported on non-Windows even in a Tauri runtime", () => {
+      setTauriInvoke();
+      setNavigatorPlatform("Linux");
+      assert.equal(getDownloadMonitorSupport(), "unsupported");
+    });
+
+    it("returns unsupported when navigator is unavailable", () => {
+      setTauriInvoke();
+      Object.defineProperty(globalThis, "navigator", {
+        value: undefined,
+        configurable: true,
+      });
+      assert.equal(getDownloadMonitorSupport(), "unsupported");
     });
   });
 

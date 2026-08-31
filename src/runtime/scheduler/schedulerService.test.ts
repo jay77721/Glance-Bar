@@ -267,6 +267,52 @@ describe("schedulerService", () => {
     assert.equal(service.getSnapshot().kind, "media", "alternation wins when both media+resident available and active");
   });
 
+  it("Rule 2: a download surfaces over media via updateKinds, then returns to media when removed", () => {
+    // Media is playing (and, with resident available + active, would normally
+    // start an alternation). When a download becomes active it must preempt
+    // media promptly because download outranks media.
+    service.updateKinds(["media", "resident"], ["resident", "media"]);
+    assert.equal(service.getSnapshot().kind, "media");
+
+    service.updateKinds(["media", "resident", "download"], ["resident", "media", "download"]);
+    assert.equal(service.getSnapshot().kind, "download", "download should surface over media");
+
+    // The download completes and leaves the active set; the bar should return
+    // to the next useful state (media, still playing).
+    service.updateKinds(["media", "resident"], ["resident", "media", "download"]);
+    assert.equal(service.getSnapshot().kind, "media", "after download completes the bar returns to media");
+  });
+
+  it("Rule 3: focus surfaces over download+media via updateKinds, then returns to download when it ends", () => {
+    service.updateKinds(["download", "media"], ["resident", "media", "download"]);
+    assert.equal(service.getSnapshot().kind, "download");
+
+    // A focus session starts; focus outranks everything and must take over.
+    service.updateKinds(["focus", "download", "media"], ["resident", "media", "download", "focus"]);
+    assert.equal(service.getSnapshot().kind, "focus", "focus should surface over download and media");
+
+    // The focus session ends; the bar should move to the next highest active
+    // kind (download), not drop straight to resident.
+    service.updateKinds(["download", "media"], ["resident", "media", "download", "focus"]);
+    assert.equal(service.getSnapshot().kind, "download", "after focus ends the bar returns to the next state");
+  });
+
+  it("Rule 4: a higher-priority kind activated via updateKinds interrupts media/resident alternation", () => {
+    service.start();
+    service.updateKinds(["media", "resident"], ["resident", "media"]);
+    assert.equal(service.getSnapshot().kind, "media");
+
+    // Let the 15s media window elapse; without interruption we'd flip to resident.
+    now += DESKTOP_STATUS_MEDIA_DURATION_MS + 1;
+    vi.setSystemTime(now);
+    vi.advanceTimersByTime(250);
+    assert.equal(service.getSnapshot().kind, "resident");
+
+    // Now a download activates mid-alternation: it must interrupt and take over.
+    service.updateKinds(["media", "resident", "download"], ["resident", "media", "download"]);
+    assert.equal(service.getSnapshot().kind, "download", "download should interrupt the media/resident alternation");
+  });
+
   it("getSnapshot() returns a fresh object each call (no shared reference)", () => {
     const a = service.getSnapshot();
     const b = service.getSnapshot();
